@@ -1,63 +1,114 @@
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center_horizontal"
-    android:padding="20dp"
-    android:background="#121212">
+package com.example.videograb
 
-    <!-- عنوان التطبيق -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="تنزيل 2في1"
-        android:textSize="24sp"
-        android:textStyle="bold"
-        android:textColor="#FFFFFF"
-        android:layout_marginBottom="30dp"/>
+import android.Manifest
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.Button
+import android.widget.EditText
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
-    <!-- حقل إدخال الرابط -->
-    <EditText
-        android:id="@+id/urlInput"
-        android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:hint="الصق رابط الفيديو أو الصوت هنا..."
-        android:textColor="#FFFFFF"
-        android:textColorHint="#888888"
-        android:background="#1E1E1E"
-        android:paddingHorizontal="15dp"
-        android:layout_marginBottom="15dp"/>
+class MainActivity : AppCompatActivity() {
 
-    <!-- زر اللصق من الحافظة -->
-    <Button
-        android:id="@+id/btnPaste"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="لصق من الحافظة"
-        android:backgroundTint="#333333"
-        android:textColor="#FFFFFF"
-        android:layout_marginBottom="10dp"/>
+    private lateinit var urlInput: EditText
+    private lateinit var txtStatus: TextView
+    private val ui = Handler(Looper.getMainLooper())
 
-    <!-- زر السجل -->
-    <Button
-        android:id="@+id/btnHistory"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="السجل"
-        android:backgroundTint="#333333"
-        android:textColor="#FFFFFF"
-        android:layout_marginBottom="20dp"/>
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
 
-    <!-- زر مشغل الموسيقى والمكتبة الشاملة (تحت السجل واللصق مباشرة) -->
-    <Button
-        android:id="@+id/btnOpenMusicPlayer"
-        android:layout_width="match_parent"
-        android:layout_height="55dp"
-        android:text="🎵 مشغل الموسيقى والمكتبة"
-        android:backgroundTint="#FF9800"
-        android:textColor="#FFFFFF"
-        android:textStyle="bold"
-        android:textSize="16sp"/>
+        urlInput = findViewById(R.id.urlInput)
+        txtStatus = findViewById(R.id.txtStatus)
 
-</LinearLayout>
+        if (Build.VERSION.SDK_INT >= 33) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1
+            )
+        }
+
+        handleShare(intent)
+
+        findViewById<Button>(R.id.btnPaste).setOnClickListener {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = cm.primaryClip?.getItemAt(0)?.text?.toString()
+            if (text.isNullOrBlank()) toast("الحافظة فارغة") else urlInput.setText(text)
+        }
+        findViewById<Button>(R.id.btnVideo).setOnClickListener { startDownload(0) }
+        findViewById<Button>(R.id.btnMp3).setOnClickListener { startDownload(-1) }
+        findViewById<Button>(R.id.btnHistory).setOnClickListener { showHistory() }
+        findViewById<Button>(R.id.btnOpenMusicPlayer).setOnClickListener {
+            startActivity(Intent(this, MusicPlayerActivity::class.java))
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShare(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Hub.listener = { ui.post { txtStatus.text = Hub.text } }
+        txtStatus.text = Hub.text
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Hub.listener = null
+    }
+
+    private fun handleShare(i: Intent?) {
+        if (i?.action == Intent.ACTION_SEND) {
+            i.getStringExtra(Intent.EXTRA_TEXT)?.let { urlInput.setText(it) }
+        }
+    }
+
+    private fun startDownload(q: Int) {
+        val url = urlInput.text.toString().trim()
+        if (url.isEmpty()) {
+            toast("الصق الرابط أول")
+            return
+        }
+        val i = Intent(this, DownloadService::class.java)
+            .putExtra("url", url)
+            .putExtra("q", q)
+            .putExtra("pl", false)
+            .putExtra("title", "")
+        ContextCompat.startForegroundService(this, i)
+        toast("بدأ التنزيل")
+    }
+
+    private fun showHistory() {
+        val items = Store.all(this)
+        if (items.isEmpty()) {
+            toast("السجل فارغ")
+            return
+        }
+        val names = items.map { it.optString("n") }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("السجل")
+            .setItems(names) { _, idx ->
+                val o = items[idx]
+                val view = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(Uri.parse(o.optString("u")), o.optString("m"))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                try { startActivity(view) } catch (e: Exception) { toast("ما أقدر أفتح الملف") }
+            }
+            .setNeutralButton("مسح السجل") { _, _ -> Store.clear(this) }
+            .setNegativeButton("إغلاق", null)
+            .show()
+    }
+
+    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+}
