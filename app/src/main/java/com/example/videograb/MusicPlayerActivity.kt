@@ -104,7 +104,7 @@ class MusicPlayerActivity : AppCompatActivity() {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 loadAudioFiles()
             } else {
-                Toast.makeText(this, "تم رفض الصلاحية، لا يمكن عرض الأغاني", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MusicPlayerActivity, "تم رفض الصلاحية، لا يمكن عرض الأغاني", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -135,9 +135,9 @@ class MusicPlayerActivity : AppCompatActivity() {
         songListView.adapter = adapter
 
         if (songList.isNotEmpty()) {
-            Toast.makeText(this, "تم العثور على ${songList.size} مقطع صوتي", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@MusicPlayerActivity, "تم العثور على ${songList.size} مقطع صوتي", Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(this, "لم يتم العثور على ملفات صوتية في الذاكرة", Toast.LENGTH_LONG).show()
+            Toast.makeText(this@MusicPlayerActivity, "لم يتم العثور على ملفات صوتية في الذاكرة", Toast.LENGTH_LONG).show()
         }
     }
 
