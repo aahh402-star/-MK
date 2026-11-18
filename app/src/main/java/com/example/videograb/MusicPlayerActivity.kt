@@ -155,6 +155,8 @@ class MusicPlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        exoPlayer.release()
+        if (::exoPlayer.isInitialized) {
+            exoPlayer.release()
+        }
     }
 }
