@@ -1,91 +1,162 @@
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="20dp"
-    android:background="#121212">
+package com.example.videograb
 
-    <!-- عنوان الشاشة -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="🎵 مكتبة ومشغل الموسيقى"
-        android:textSize="22sp"
-        android:textStyle="bold"
-        android:textColor="#FFFFFF"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="20dp"/>
+import android.Manifest
+import android.content.pm.PackageManager
+import android.database.Cursor
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.MediaStore
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.ListView
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
 
-    <!-- عرض اسم الملف الحالي قيد التشغيل -->
-    <TextView
-        android:id="@+id/txtSongTitle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="اختر مقطعاً صوتياً للبدء..."
-        android:textSize="16sp"
-        android:textColor="#FF9800"
-        android:gravity="center"
-        android:layout_marginBottom="15dp"/>
+class MusicPlayerActivity : AppCompatActivity() {
 
-    <!-- شريط التقدم (SeekBar) -->
-    <SeekBar
-        android:id="@+id/seekBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="20dp"/>
+    private lateinit var exoPlayer: ExoPlayer
+    private lateinit var txtSongTitle: TextView
+    private lateinit var btnPlayPause: Button
+    private lateinit var btnPrev: Button
+    private lateinit var btnNext: Button
+    private lateinit var songListView: ListView
 
-    <!-- أزرار التحكم (السابق، تشغيل/إيقاف، التالي) -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_marginBottom="25dp">
+    private val songList = mutableListOf<SongModel>()
+    private var currentSongIndex = 0
 
-        <Button
-            android:id="@+id/btnPrev"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="⏮ السابق"
-            android:backgroundTint="#333333"
-            android:textColor="#FFFFFF"
-            android:layout_marginEnd="10dp"/>
+    companion object {
+        private const val PERMISSION_REQUEST_CODE = 100
+    }
 
-        <Button
-            android:id="@+id/btnPlayPause"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="▶ تشغيل"
-            android:backgroundTint="#FF9800"
-            android:textColor="#FFFFFF"
-            android:layout_marginEnd="10dp"
-            android:textStyle="bold"/>
+    data class SongModel(val title: String, val uri: Uri)
 
-        <Button
-            android:id="@+id/btnNext"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="التالي ⏭"
-            android:backgroundTint="#333333"
-            android:textColor="#FFFFFF"/>
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_music_player)
 
-    </LinearLayout>
+        txtSongTitle = findViewById(R.id.txtSongTitle)
+        btnPlayPause = findViewById(R.id.btnPlayPause)
+        btnPrev = findViewById(R.id.btnPrev)
+        btnNext = findViewById(R.id.btnNext)
+        songListView = findViewById(R.id.songListView)
 
-    <!-- قائمة عرض جميع الملفات الصوتية في الهاتف -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="قائمة الملفات الصوتية:"
-        android:textSize="14sp"
-        android:textColor="#888888"
-        android:layout_marginBottom="5dp"/>
+        // تهيئة المشغل ExoPlayer
+        exoPlayer = ExoPlayer.Builder(this).build()
 
-    <ListView
-        android:id="@+id/songListView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:divider="#222222"
-        android:dividerHeight="1dp"/>
+        // فحص الصلاحيات وطلبها لجلب الأغاني من الذاكرة
+        checkAndRequestPermissions()
 
-</LinearLayout>
+        // أزرار التحكم
+        btnPlayPause.setOnClickListener {
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+                btnPlayPause.text = "▶ تشغيل"
+            } else {
+                exoPlayer.play()
+                btnPlayPause.text = "⏸ إيقاف مؤقت"
+            }
+        }
+
+        btnNext.setOnClickListener {
+            if (songList.isNotEmpty()) {
+                currentSongIndex = (currentSongIndex + 1) % songList.size
+                playSong(currentSongIndex)
+            }
+        }
+
+        btnPrev.setOnClickListener {
+            if (songList.isNotEmpty()) {
+                currentSongIndex = if (currentSongIndex - 1 < 0) songList.size - 1 else currentSongIndex - 1
+                playSong(currentSongIndex)
+            }
+        }
+
+        // النقر على أي أغنية من القائمة لتشغيلها مباشرة
+        songListView.setOnItemClickListener { _, _, position, _ ->
+            currentSongIndex = position
+            playSong(currentSongIndex)
+        }
+    }
+
+    private fun checkAndRequestPermissions() {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+
+        if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(permission), PERMISSION_REQUEST_CODE)
+        } else {
+            loadAudioFiles()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                loadAudioFiles()
+            } else {
+                Toast.makeText(this, "تم رفض الصلاحية، لا يمكن عرض الأغاني", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun loadAudioFiles() {
+        songList.clear()
+        val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.DATA
+        )
+
+        val cursor: Cursor? = contentResolver.query(uri, projection, null, null, null)
+        cursor?.use {
+            val titleColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+            val dataColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+
+            while (it.moveToNext()) {
+                val title = it.getString(titleColumn)
+                val path = it.getString(dataColumn)
+                val audioUri = Uri.parse(path)
+                songList.add(SongModel(title, audioUri))
+            }
+        }
+
+        val titles = songList.map { it.title }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, titles)
+        songListView.adapter = adapter
+
+        if (songList.isNotEmpty()) {
+            Toast.makeText(this, "تم العثور على ${songList.size} مقطع صوتي", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "لم يتم العثور على ملفات صوتية في الذاكرة", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun playSong(index: Int) {
+        if (songList.isEmpty()) return
+        val song = songList[index]
+        txtSongTitle.text = song.title
+
+        val mediaItem = MediaItem.fromUri(song.uri)
+        exoPlayer.setMediaItem(mediaItem)
+        exoPlayer.prepare()
+        exoPlayer.play()
+        btnPlayPause.text = "⏸ إيقاف مؤقت"
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::exoPlayer.isInitialized) {
+            exoPlayer.release()
+        }
+    }
+}
