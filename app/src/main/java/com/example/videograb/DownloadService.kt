@@ -35,12 +35,30 @@ object Hub {
 
 object Engine {
     private var ok = false
+    private var checked = false
+
     @Synchronized
     fun ensure(app: Application) {
         if (ok) return
         YoutubeDL.getInstance().init(app)
         FFmpeg.getInstance().init(app)
         ok = true
+    }
+
+    // يجهز المحرك ويحدثه بالخلفية (مرة كل 12 ساعة) حتى ما يفشل التنزيل أول مرة
+    @Synchronized
+    fun ensureUpdated(app: Application) {
+        ensure(app)
+        if (checked) return
+        checked = true
+        val sp = app.getSharedPreferences("engine", Context.MODE_PRIVATE)
+        val last = sp.getLong("upd", 0L)
+        if (System.currentTimeMillis() - last > 12L * 3600 * 1000) {
+            try {
+                YoutubeDL.getInstance().updateYoutubeDL(app)
+                sp.edit().putLong("upd", System.currentTimeMillis()).apply()
+            } catch (e: Exception) { }
+        }
     }
 }
 
@@ -174,14 +192,15 @@ class DownloadService : Service() {
         dir.mkdirs()
 
         try {
-            Engine.ensure(application)
+            Engine.ensureUpdated(application)
             try {
                 doDownload(job, dir, name)
             } catch (e: Exception) {
                 if (cancelled) throw e
                 if (!(job.playlist && hasFiles(dir))) {
-                    setState(true, 0, true, "فشل، نحدّث المحرك ونعيد المحاولة...")
-                    try { YoutubeDL.getInstance().updateYoutubeDL(application) } catch (e2: Exception) { }
+                    // إعادة محاولة صامتة بالخلفية بدون إظهار أي رسالة فشل
+                    lastPct = -1
+                    setState(true, 0, true, "جاري التجهيز: $name")
                     dir.deleteRecursively()
                     dir.mkdirs()
                     try {
@@ -246,7 +265,9 @@ class DownloadService : Service() {
             }
         }
         req.addOption("--no-mtime")
-        req.addOption("-N", "4")
+        // خيارات السرعة
+        req.addOption("-N", "16")
+        req.addOption("--http-chunk-size", "10M")
         req.addOption("--retries", "3")
         req.addOption("--fragment-retries", "3")
         if (job.playlist) {
