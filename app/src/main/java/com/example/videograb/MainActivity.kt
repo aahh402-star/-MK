@@ -9,8 +9,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -18,26 +22,46 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var urlInput: EditText
-    private lateinit var txtStatus: TextView
+    private lateinit var progress: ProgressBar
+    private lateinit var txtProgress: TextView
     private val ui = Handler(Looper.getMainLooper())
+
+    // الرابط -> (العنوان، قائمة الجودات)
+    private val cache = HashMap<String, Pair<String, List<Int>>>()
+    private var fetching = false
+    private var pendingDialog = false
+    private var fetchGen = 0
+    private var wasActive = false
+    private var searchRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         urlInput = findViewById(R.id.urlInput)
-        txtStatus = findViewById(R.id.txtStatus)
+        progress = findViewById(R.id.progressBar)
+        txtProgress = findViewById(R.id.txtProgress)
 
         if (Build.VERSION.SDK_INT >= 33) {
             ActivityCompat.requestPermissions(
                 this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1
             )
         }
+
+        // تجهيز المحرك مسبقاً حتى يصير البحث أسرع
+        thread { try { Engine.ensure(application) } catch (e: Exception) { } }
+
+        urlInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) { scheduleSearch() }
+        })
 
         handleShare(intent)
 
@@ -60,8 +84,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        Hub.listener = { ui.post { txtStatus.text = Hub.text } }
-        txtStatus.text = Hub.text
+        wasActive = Hub.active
+        Hub.listener = {
+            ui.post {
+                refreshBar()
+                if (wasActive && !Hub.active && Hub.text.isNotEmpty()) {
+                    Toast.makeText(this, Hub.text, Toast.LENGTH_LONG).show()
+                }
+                wasActive = Hub.active
+            }
+        }
+        refreshBar()
     }
 
     override fun onPause() {
@@ -75,56 +108,92 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onDownloadClicked() {
-        val url = urlInput.text.toString().trim()
+    private fun currentUrl(): String =
+        Regex("https?://\\S+").find(urlInput.text.toString())?.value ?: ""
+
+    // يبدأ البحث عن الجودات تلقائياً بعد ما يتوقف الكتابة أو اللصق
+    private fun scheduleSearch() {
+        searchRunnable?.let { ui.removeCallbacks(it) }
+        val url = currentUrl()
         if (url.isEmpty()) {
-            toast("الصق الرابط أول")
+            fetchGen++
+            fetching = false
+            pendingDialog = false
+            refreshBar()
             return
         }
-        val types = arrayOf("🎬 فيديو (كل الجودات)", "🎵 صوت MP3", "🎵 صوت MP4 (M4A)")
-        AlertDialog.Builder(this)
-            .setTitle("نوع التنزيل")
-            .setItems(types) { _, i ->
-                when (i) {
-                    0 -> chooseQuality(url)
-                    1 -> startDownload(url, -1, "")
-                    2 -> startDownload(url, -2, "")
-                }
-            }
-            .setNegativeButton("إلغاء", null)
-            .show()
+        if (cache.containsKey(url)) return
+        val r = Runnable { fetchFormats(url) }
+        searchRunnable = r
+        ui.postDelayed(r, 400)
     }
 
-    private fun chooseQuality(url: String) {
-        txtStatus.text = "جاري جلب الجودات المتوفرة..."
+    private fun fetchFormats(url: String) {
+        val gen = ++fetchGen
+        fetching = true
+        refreshBar()
         thread {
+            var res: Pair<String, List<Int>>? = null
             try {
                 Engine.ensure(application)
-                val info = YoutubeDL.getInstance().getInfo(url)
+                val req = YoutubeDLRequest(url)
+                req.addOption("--no-playlist")
+                req.addOption("--no-warnings")
+                req.addOption("--socket-timeout", "8")
+                val info = YoutubeDL.getInstance().getInfo(req)
                 val heights = (info.formats ?: emptyList())
                     .mapNotNull { f -> f?.height }
                     .filter { it > 0 }
                     .distinct()
                     .sortedDescending()
-                val title = info.title ?: ""
-                ui.post { showQualities(url, heights, title) }
-            } catch (e: Exception) {
-                ui.post {
-                    txtStatus.text = ""
-                    toast("تعذر جلب الجودات، راح ننزل بأعلى جودة")
-                    startDownload(url, 0, "")
+                res = Pair(info.title ?: "", heights)
+            } catch (e: Exception) { }
+            val result = res
+            ui.post {
+                if (gen != fetchGen) return@post
+                fetching = false
+                if (result != null) cache[url] = result
+                refreshBar()
+                if (pendingDialog) {
+                    pendingDialog = false
+                    showOptions(url)
                 }
             }
         }
     }
 
-    private fun showQualities(url: String, heights: List<Int>, title: String) {
-        txtStatus.text = ""
-        val labels = (listOf("⭐ أعلى جودة") + heights.map { "${it}p" }).toTypedArray()
-        val values = listOf(0) + heights
+    private fun onDownloadClicked() {
+        val url = currentUrl()
+        if (url.isEmpty()) {
+            toast("الصق الرابط أول")
+            return
+        }
+        searchRunnable?.let { ui.removeCallbacks(it) }
+        when {
+            cache.containsKey(url) -> showOptions(url)
+            fetching -> pendingDialog = true
+            else -> {
+                pendingDialog = true
+                fetchFormats(url)
+            }
+        }
+    }
+
+    // قائمة وحدة فيها كل الجودات + الصوت
+    private fun showOptions(url: String) {
+        val data = cache[url]
+        val heights = data?.second ?: emptyList()
+        val title = data?.first ?: ""
+        val labels = ArrayList<String>()
+        val values = ArrayList<Int>()
+        labels.add("🎬 فيديو - أعلى جودة"); values.add(0)
+        heights.forEach { labels.add("🎬 فيديو - ${it}p"); values.add(it) }
+        labels.add("🎵 صوت MP3"); values.add(-1)
+        labels.add("🎵 صوت MP4 (M4A)"); values.add(-2)
+
         AlertDialog.Builder(this)
-            .setTitle("اختر الجودة")
-            .setItems(labels) { _, i -> startDownload(url, values[i], title) }
+            .setTitle("اختر ما تريد تنزيله")
+            .setItems(labels.toTypedArray()) { _, i -> startDownload(url, values[i], title) }
             .setNegativeButton("إلغاء", null)
             .show()
     }
@@ -136,7 +205,23 @@ class MainActivity : AppCompatActivity() {
             .putExtra("pl", false)
             .putExtra("title", title)
         ContextCompat.startForegroundService(this, i)
-        toast("بدأ التنزيل")
+    }
+
+    private fun refreshBar() {
+        if (Hub.active) {
+            progress.visibility = View.VISIBLE
+            progress.isIndeterminate = Hub.indeterminate
+            if (!Hub.indeterminate) progress.progress = Hub.progress
+            txtProgress.visibility = View.VISIBLE
+            txtProgress.text = Hub.text.replace("\n", " • ")
+        } else if (fetching) {
+            progress.visibility = View.VISIBLE
+            progress.isIndeterminate = true
+            txtProgress.visibility = View.GONE
+        } else {
+            progress.visibility = View.GONE
+            txtProgress.visibility = View.GONE
+        }
     }
 
     private fun showHistory() {
