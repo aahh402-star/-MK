@@ -7,20 +7,36 @@
     android:background="#121212">
 
     <TextView
+        android:id="@+id/txtHeader"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#FF9800"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <ListView
+        android:id="@+id/songListView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <TextView
         android:id="@+id/txtSongTitle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="اختر أغنية"
         android:textColor="#FFFFFF"
-        android:textSize="18sp"
+        android:textSize="16sp"
         android:gravity="center"
-        android:layout_marginBottom="12dp" />
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="12dp">
+        android:layoutDirection="ltr">
 
         <Button
             android:id="@+id/btnPrev"
@@ -43,11 +59,4 @@
             android:layout_weight="1"
             android:text="⏭" />
     </LinearLayout>
-
-    <ListView
-        android:id="@+id/songListView"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
-
 </LinearLayout>
