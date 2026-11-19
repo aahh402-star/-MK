@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
 
     // الرابط -> (العنوان، قائمة الجودات)
     private val cache = HashMap<String, Pair<String, List<Int>>>()
+    private val standardHeights = listOf(2160, 1440, 1080, 720, 480, 360, 240, 144)
     private var fetching = false
     private var pendingDialog = false
     private var fetchGen = 0
@@ -54,8 +55,8 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // تجهيز المحرك مسبقاً حتى يصير البحث أسرع
-        thread { try { Engine.ensure(application) } catch (e: Exception) { } }
+        // تجهيز وتحديث المحرك بالخلفية من أول ما يفتح التطبيق
+        thread { try { Engine.ensureUpdated(application) } catch (e: Exception) { } }
 
         urlInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -111,7 +112,7 @@ class MainActivity : AppCompatActivity() {
     private fun currentUrl(): String =
         Regex("https?://\\S+").find(urlInput.text.toString())?.value ?: ""
 
-    // يبدأ البحث عن الجودات تلقائياً بعد ما يتوقف الكتابة أو اللصق
+    // يبدأ البحث عن الجودات تلقائياً أول ما ينلصق الرابط
     private fun scheduleSearch() {
         searchRunnable?.let { ui.removeCallbacks(it) }
         val url = currentUrl()
@@ -125,7 +126,7 @@ class MainActivity : AppCompatActivity() {
         if (cache.containsKey(url)) return
         val r = Runnable { fetchFormats(url) }
         searchRunnable = r
-        ui.postDelayed(r, 400)
+        ui.postDelayed(r, 300)
     }
 
     private fun fetchFormats(url: String) {
@@ -135,11 +136,11 @@ class MainActivity : AppCompatActivity() {
         thread {
             var res: Pair<String, List<Int>>? = null
             try {
-                Engine.ensure(application)
+                Engine.ensureUpdated(application)
                 val req = YoutubeDLRequest(url)
                 req.addOption("--no-playlist")
                 req.addOption("--no-warnings")
-                req.addOption("--socket-timeout", "8")
+                req.addOption("--socket-timeout", "15")
                 val info = YoutubeDL.getInstance().getInfo(req)
                 val heights = (info.formats ?: emptyList())
                     .mapNotNull { f -> f?.height }
@@ -171,9 +172,18 @@ class MainActivity : AppCompatActivity() {
         searchRunnable?.let { ui.removeCallbacks(it) }
         when {
             cache.containsKey(url) -> showOptions(url)
-            fetching -> pendingDialog = true
-            else -> {
+            fetching -> {
+                // ننتظر 3 ثواني كحد أقصى، وبعدها تظهر القائمة القياسية
                 pendingDialog = true
+                ui.postDelayed({
+                    if (pendingDialog) {
+                        pendingDialog = false
+                        showOptions(url)
+                    }
+                }, 3000)
+            }
+            else -> {
+                showOptions(url)
                 fetchFormats(url)
             }
         }
@@ -182,8 +192,10 @@ class MainActivity : AppCompatActivity() {
     // قائمة وحدة فيها كل الجودات + الصوت
     private fun showOptions(url: String) {
         val data = cache[url]
-        val heights = data?.second ?: emptyList()
+        val found = data?.second ?: emptyList()
+        val heights = if (found.isEmpty()) standardHeights else found
         val title = data?.first ?: ""
+
         val labels = ArrayList<String>()
         val values = ArrayList<Int>()
         labels.add("🎬 فيديو - أعلى جودة"); values.add(0)
