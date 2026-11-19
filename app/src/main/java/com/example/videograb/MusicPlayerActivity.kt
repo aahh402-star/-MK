@@ -1,162 +1,218 @@
 package com.example.videograb
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.ContentUris
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.BaseColumns
 import android.provider.MediaStore
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 
 class MusicPlayerActivity : AppCompatActivity() {
 
-    private lateinit var exoPlayer: ExoPlayer
+    data class Item(val title: String, val uri: Uri)
+
+    private lateinit var txtHeader: TextView
     private lateinit var txtSongTitle: TextView
     private lateinit var btnPlayPause: Button
     private lateinit var btnPrev: Button
     private lateinit var btnNext: Button
-    private lateinit var songListView: ListView
+    private lateinit var listView: ListView
 
-    private val songList = mutableListOf<SongModel>()
-    private var currentSongIndex = 0
+    private var controller: MediaController? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
 
-    companion object {
-        private const val PERMISSION_REQUEST_CODE = 100
+    private var mode = 0 // 0 = المجلدات، 1 = الموسيقى، 2 = الفيديوات
+    private var music = listOf<Item>()
+    private var videos = listOf<Item>()
+
+    private val playerListener = object : Player.Listener {
+        override fun onEvents(player: Player, events: Player.Events) {
+            updateUi()
+        }
     }
-
-    data class SongModel(val title: String, val uri: Uri)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_music_player)
 
+        txtHeader = findViewById(R.id.txtHeader)
         txtSongTitle = findViewById(R.id.txtSongTitle)
         btnPlayPause = findViewById(R.id.btnPlayPause)
         btnPrev = findViewById(R.id.btnPrev)
         btnNext = findViewById(R.id.btnNext)
-        songListView = findViewById(R.id.songListView)
+        listView = findViewById(R.id.songListView)
 
-        // تهيئة المشغل ExoPlayer
-        exoPlayer = ExoPlayer.Builder(this).build()
+        if (!hasPermission()) {
+            ActivityCompat.requestPermissions(this, neededPermissions(), 100)
+        }
 
-        // فحص الصلاحيات وطلبها لجلب الأغاني من الذاكرة
-        checkAndRequestPermissions()
+        showFolders()
 
-        // أزرار التحكم
+        listView.setOnItemClickListener { _, _, pos, _ ->
+            when (mode) {
+                0 -> openFolder(if (pos == 0) 1 else 2)
+                1 -> playMusic(pos)
+                2 -> playVideo(pos)
+            }
+        }
+
         btnPlayPause.setOnClickListener {
-            if (exoPlayer.isPlaying) {
-                exoPlayer.pause()
-                btnPlayPause.text = "▶ تشغيل"
-            } else {
-                exoPlayer.play()
-                btnPlayPause.text = "⏸ إيقاف مؤقت"
-            }
+            controller?.let { if (it.isPlaying) it.pause() else it.play() }
         }
+        btnNext.setOnClickListener { controller?.seekToNextMediaItem() }
+        btnPrev.setOnClickListener { controller?.seekToPreviousMediaItem() }
 
-        btnNext.setOnClickListener {
-            if (songList.isNotEmpty()) {
-                currentSongIndex = (currentSongIndex + 1) % songList.size
-                playSong(currentSongIndex)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (mode != 0) {
+                    showFolders()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
             }
-        }
-
-        btnPrev.setOnClickListener {
-            if (songList.isNotEmpty()) {
-                currentSongIndex = if (currentSongIndex - 1 < 0) songList.size - 1 else currentSongIndex - 1
-                playSong(currentSongIndex)
-            }
-        }
-
-        // النقر على أي أغنية من القائمة لتشغيلها مباشرة
-        songListView.setOnItemClickListener { _, _, position, _ ->
-            currentSongIndex = position
-            playSong(currentSongIndex)
-        }
+        })
     }
 
-    private fun checkAndRequestPermissions() {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_AUDIO
+    override fun onStart() {
+        super.onStart()
+        val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
+        val future = MediaController.Builder(this, token).buildAsync()
+        controllerFuture = future
+        future.addListener({
+            try {
+                controller = future.get()
+                controller?.addListener(playerListener)
+                updateUi()
+            } catch (e: Exception) {
+                toast("تعذر الاتصال بالمشغل")
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    override fun onStop() {
+        controller?.removeListener(playerListener)
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controller = null
+        controllerFuture = null
+        super.onStop()
+    }
+
+    private fun neededPermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT >= 33) {
+            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.READ_MEDIA_VIDEO)
         } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
 
-        if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(permission), PERMISSION_REQUEST_CODE)
-        } else {
-            loadAudioFiles()
-        }
+    private fun hasPermission(): Boolean = neededPermissions().all {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                loadAudioFiles()
-            } else {
-                Toast.makeText(this@MusicPlayerActivity, "تم رفض الصلاحية، لا يمكن عرض الأغاني", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun loadAudioFiles() {
-        songList.clear()
-        val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(
-            MediaStore.Audio.Media.TITLE,
-            MediaStore.Audio.Media.DATA
+    private fun showFolders() {
+        mode = 0
+        txtHeader.text = "📁 المكتبة"
+        listView.adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1,
+            listOf("🎵 الموسيقى", "🎬 الفيديوات")
         )
+    }
 
-        val cursor: Cursor? = contentResolver.query(uri, projection, null, null, null)
-        cursor?.use {
-            val titleColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-            val dataColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+    private fun openFolder(m: Int) {
+        if (!hasPermission()) {
+            ActivityCompat.requestPermissions(this, neededPermissions(), 100)
+            toast("اسمح بالوصول للملفات ثم افتح المجلد مرة ثانية")
+            return
+        }
+        mode = m
+        if (m == 1) {
+            music = loadItems(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                "${MediaStore.Audio.Media.IS_RINGTONE} = 0 AND " +
+                    "${MediaStore.Audio.Media.IS_NOTIFICATION} = 0 AND " +
+                    "${MediaStore.Audio.Media.IS_ALARM} = 0"
+            )
+            txtHeader.text = "🎵 الموسيقى (${music.size})"
+            listView.adapter = ArrayAdapter(
+                this, android.R.layout.simple_list_item_1, music.map { it.title }
+            )
+        } else {
+            videos = loadItems(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, null)
+            txtHeader.text = "🎬 الفيديوات (${videos.size})"
+            listView.adapter = ArrayAdapter(
+                this, android.R.layout.simple_list_item_1, videos.map { it.title }
+            )
+        }
+    }
 
-            while (it.moveToNext()) {
-                val title = it.getString(titleColumn)
-                val path = it.getString(dataColumn)
-                val audioUri = Uri.parse(path)
-                songList.add(SongModel(title, audioUri))
+    private fun loadItems(collection: Uri, selection: String?): List<Item> {
+        val out = mutableListOf<Item>()
+        val projection = arrayOf(BaseColumns._ID, MediaStore.MediaColumns.TITLE)
+        contentResolver.query(collection, projection, selection, null, null)?.use { c ->
+            val idCol = c.getColumnIndexOrThrow(BaseColumns._ID)
+            val titleCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.TITLE)
+            while (c.moveToNext()) {
+                val id = c.getLong(idCol)
+                val title = c.getString(titleCol) ?: "بدون عنوان"
+                out.add(Item(title, ContentUris.withAppendedId(collection, id)))
             }
         }
+        return out.sortedBy { it.title.lowercase() }
+    }
 
-        val titles = songList.map { it.title }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, titles)
-        songListView.adapter = adapter
+    private fun playMusic(index: Int) {
+        val c = controller
+        if (c == null) {
+            toast("المشغل لسا يتجهز، جرب مرة ثانية")
+            return
+        }
+        val items = music.map {
+            MediaItem.Builder()
+                .setUri(it.uri)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(it.title).build())
+                .build()
+        }
+        c.setMediaItems(items, index, 0L)
+        c.prepare()
+        c.play()
+    }
 
-        if (songList.isNotEmpty()) {
-            Toast.makeText(this@MusicPlayerActivity, "تم العثور على ${songList.size} مقطع صوتي", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this@MusicPlayerActivity, "لم يتم العثور على ملفات صوتية في الذاكرة", Toast.LENGTH_LONG).show()
+    private fun playVideo(index: Int) {
+        val v = videos[index]
+        val i = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(v.uri, "video/*")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(i)
+        } catch (e: Exception) {
+            toast("ما لقيت تطبيق يشغّل الفيديو")
         }
     }
 
-    private fun playSong(index: Int) {
-        if (songList.isEmpty()) return
-        val song = songList[index]
-        txtSongTitle.text = song.title
-
-        val mediaItem = MediaItem.fromUri(song.uri)
-        exoPlayer.setMediaItem(mediaItem)
-        exoPlayer.prepare()
-        exoPlayer.play()
-        btnPlayPause.text = "⏸ إيقاف مؤقت"
+    private fun updateUi() {
+        val c = controller ?: return
+        txtSongTitle.text = c.mediaMetadata.title ?: "اختر أغنية"
+        btnPlayPause.text = if (c.isPlaying) "⏸ إيقاف مؤقت" else "▶ تشغيل"
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (::exoPlayer.isInitialized) {
-            exoPlayer.release()
-        }
-    }
+    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 }
